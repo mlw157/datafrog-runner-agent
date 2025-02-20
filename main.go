@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -16,6 +19,12 @@ type Instance struct {
 	AvailabilityZone string    `json:"availability_zone"`
 	PrivateIPAddress string    `json:"private_ip_address"`
 	LastSeenAt       time.Time `json:"last_seen_at"`
+}
+
+type Job struct {
+	InstanceID string `json:"instance_id"`
+	Repository string `json:"repository"`
+	Workflow   string `json:"workflow"`
 }
 
 func getMetadataToken() (string, error) {
@@ -94,6 +103,38 @@ func collectInstanceInfo(token string) (*Instance, error) {
 	}, nil
 }
 
+func findWorkerFiles(rootDir string) ([]string, error) {
+	var workerFiles []string
+	err := filepath.Walk(rootDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(info.Name(), "Worker_") {
+			workerFiles = append(workerFiles, path)
+		}
+		return nil
+	})
+	return workerFiles, err
+}
+
+func extractRepository(filePath string) (string, error) {
+	cmd := exec.Command("sh", "-c", fmt.Sprintf(`grep '"v": "https://api.github.com/repos/' %s | awk -F'/' '{print $5 "/" $6}' | head -1`, filePath))
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func extractWorkflow(filePath string) (string, error) {
+	cmd := exec.Command("sh", "-c", fmt.Sprintf(`grep 'workflows/' %s | grep '@refs/heads/' | awk -F'"' '{print $4}'`, filePath))
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 func sendInstanceInfo(info *Instance) error {
 	data, err := json.Marshal(info)
 	if err != nil {
@@ -117,6 +158,29 @@ func sendInstanceInfo(info *Instance) error {
 	return nil
 }
 
+func sendJob(job *Job) error {
+	data, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.Post(
+		"https://runner-controller.cfappsecurity.com/api/jobs",
+		"application/json",
+		bytes.NewBuffer(data),
+	)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
 func main() {
 	token, err := getMetadataToken()
 	if err != nil {
@@ -125,15 +189,51 @@ func main() {
 	}
 
 	for {
-		info, err := collectInstanceInfo(token)
+		instance, err := collectInstanceInfo(token)
 		if err != nil {
 			fmt.Printf("Error collecting instance info: %v\n", err)
+			continue
+		}
+
+		// Send instance info first
+		err = sendInstanceInfo(instance)
+		if err != nil {
+			fmt.Printf("Error sending instance info: %v\n", err)
 		} else {
-			err = sendInstanceInfo(info)
+			fmt.Printf("Successfully sent instance info: %+v\n", instance)
+		}
+
+		workerFiles, err := findWorkerFiles("/app/worker_files")
+		if err != nil {
+			fmt.Printf("Error finding worker files: %v\n", err)
+			continue
+		}
+
+		for _, file := range workerFiles {
+			repo, err := extractRepository(file)
+			if err != nil || repo == "" {
+				fmt.Printf("Error extracting repo from %s: %v\n", file, err)
+				continue
+			}
+
+			workflow, err := extractWorkflow(file)
+			if err != nil || workflow == "" {
+				fmt.Printf("Error extracting workflow from %s: %v\n", file, err)
+				continue
+			}
+
+			job := &Job{
+				InstanceID: instance.InstanceID,
+				Repository: repo,
+				Workflow:   workflow,
+			}
+
+			// Send job info
+			err = sendJob(job)
 			if err != nil {
-				fmt.Printf("Error sending instance info: %v\n", err)
+				fmt.Printf("Error sending job: %v\n", err)
 			} else {
-				fmt.Printf("Successfully sent instance info: %+v\n", info)
+				fmt.Printf("Successfully sent job: %+v\n", job)
 			}
 		}
 
