@@ -12,7 +12,7 @@ import (
 
 type Instance struct {
 	InstanceID       string    `json:"instance_id"`
-	Type             string    `json:"type"` // Changed from InstanceType to Type
+	Type             string    `json:"type"`
 	AvailabilityZone string    `json:"availability_zone"`
 	PrivateIPAddress string    `json:"private_ip_address"`
 	LastSeenAt       time.Time `json:"last_seen_at"`
@@ -87,10 +87,10 @@ func collectInstanceInfo(token string) (*Instance, error) {
 
 	return &Instance{
 		InstanceID:       instanceID,
-		Type:             instanceType, // Changed from InstanceType to Type
+		Type:             instanceType,
 		AvailabilityZone: az,
 		PrivateIPAddress: privateIP,
-		LastSeenAt:       time.Now().UTC(), // Added LastSeenAt field
+		LastSeenAt:       time.Now().UTC(),
 	}, nil
 }
 
