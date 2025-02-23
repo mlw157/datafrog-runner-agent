@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"runner-agent/internal/agent"
@@ -13,6 +14,12 @@ func main() {
 	controllerURL := os.Getenv("CONTROLLER_API_URL")
 	controllerToken := os.Getenv("CONTROLLER_API_TOKEN")
 
+	if controllerURL == "" || controllerToken == "" {
+		log.Fatal("missing required environment variables: CONTROLLER_API_URL or CONTROLLER_API_TOKEN")
+	}
+
+	fmt.Println(controllerURL)
+
 	controllerClient := controller.NewDatafrogControllerClient(controllerURL, controllerToken)
 	awsClient := aws.NewAgentAWSClient()
 
@@ -20,6 +27,6 @@ func main() {
 
 	err := frogAgent.Deploy()
 	if err != nil {
-		log.Fatalf("error deploying agent: %v", err)
+		log.Fatal(err)
 	}
 }

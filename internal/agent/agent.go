@@ -2,9 +2,13 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"runner-agent/internal/api/aws"
 	"runner-agent/internal/api/controller"
 	"runner-agent/internal/models"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -12,7 +16,7 @@ type Agent struct {
 	ControllerClient controller.DatafrogControllerClient
 	AWSClient        aws.AgentAWSClient
 	Instance         *models.Instance
-	Jobs             []models.Job
+	JobFiles         []string
 	InitTime         time.Time
 }
 
@@ -28,12 +32,12 @@ func (a *Agent) Deploy() error {
 	a.Instance = &models.Instance{}
 	err := a.getInstance()
 	if err != nil {
-		return fmt.Errorf("error retrieving instance: %w", err)
+		return fmt.Errorf("agent deploy: error retrieving instance: %w", err)
 	}
 
 	err = a.ControllerClient.CreateInstance(*a.Instance)
 	if err != nil {
-		return err
+		return fmt.Errorf("agent deploy: error creating instance: %w", err)
 	}
 
 	return nil
@@ -72,4 +76,31 @@ func (a *Agent) getInstance() error {
 	a.Instance.LastSeenAt = time.Now()
 
 	return nil
+}
+
+func (a *Agent) getJobs(root string) ([]string, error) {
+	var newJobFiles []string
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// job logs are located inside _diag folders
+		if d.IsDir() && d.Name() != "_diag" {
+			return filepath.SkipDir
+		}
+
+		if !d.IsDir() && strings.HasPrefix(d.Name(), "Worker_") {
+			if !slices.Contains(a.JobFiles, path) {
+				a.JobFiles = append(a.JobFiles, path)
+				newJobFiles = append(newJobFiles, path)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return newJobFiles, nil
 }
