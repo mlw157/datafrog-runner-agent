@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runner-agent/internal/api/aws"
 	"runner-agent/internal/api/controller"
 	"runner-agent/internal/models"
@@ -18,13 +21,15 @@ type Agent struct {
 	Instance         *models.Instance
 	JobFiles         []string
 	InitTime         time.Time
+	MonitorInterval  int
 }
 
-func NewAgent(controllerClient controller.DatafrogControllerClient, awsClient aws.AgentAWSClient) *Agent {
+func NewAgent(controllerClient controller.DatafrogControllerClient, awsClient aws.AgentAWSClient, monitorInterval int) *Agent {
 	return &Agent{
 		ControllerClient: controllerClient,
 		AWSClient:        awsClient,
 		InitTime:         time.Now(),
+		MonitorInterval:  monitorInterval,
 	}
 }
 
@@ -39,6 +44,8 @@ func (a *Agent) Deploy() error {
 	if err != nil {
 		return fmt.Errorf("agent deploy: error creating instance: %w", err)
 	}
+
+	a.monitor(a.MonitorInterval)
 
 	return nil
 }
@@ -78,7 +85,39 @@ func (a *Agent) getInstance() error {
 	return nil
 }
 
-func (a *Agent) getJobs(root string) ([]string, error) {
+func (a *Agent) monitor(monitorInterval int) {
+	interval := time.Duration(monitorInterval) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			newJobFiles, err := a.getNewJobFiles(".")
+			if err != nil {
+				log.Fatalf("agent monitor: error finding job files: %v", err)
+			}
+
+			for _, file := range newJobFiles {
+				job, err := a.processJobFile(file)
+				if err != nil {
+					log.Printf("agent monitor: error processing job file: %v", err)
+					continue
+				}
+				if job != nil {
+					err = a.ControllerClient.CreateJob(*job)
+					if err != nil {
+						log.Printf("agent monitor: error sending job to controller api: %v", err)
+					}
+				}
+
+			}
+		}
+
+	}
+}
+
+func (a *Agent) getNewJobFiles(root string) ([]string, error) {
 	var newJobFiles []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -103,4 +142,62 @@ func (a *Agent) getJobs(root string) ([]string, error) {
 	}
 
 	return newJobFiles, nil
+}
+
+func (a *Agent) processJobFile(path string) (*models.Job, error) {
+	jobFile, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer jobFile.Close()
+
+	var org, repo, workflow string
+	var startTime, endTime time.Time
+
+	repoPattern := regexp.MustCompile(`"v": "https://api.github.com/repos/([^/]+)/([^/]+)`)
+	workflowPattern := regexp.MustCompile(`workflows/([^"]+)`)
+	timePattern := regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z)`)
+
+	scanner := bufio.NewScanner(jobFile)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		repoMatch := repoPattern.FindStringSubmatch(line)
+		if repoMatch != nil {
+			org = repoMatch[1]
+			repo = repoMatch[2]
+		}
+
+		workflowMatch := workflowPattern.FindStringSubmatch(line)
+		if workflowMatch != nil {
+			workflow = workflowMatch[1]
+		}
+
+		timeMatch := timePattern.FindStringSubmatch(line)
+		if timeMatch != nil {
+			timestamp, err := time.Parse("2006-01-02 15:04:05Z", timeMatch[1])
+			if err != nil {
+				return nil, err
+			}
+			// startTime will be the first timestamp found
+			if startTime.IsZero() {
+				startTime = timestamp
+			}
+			// endTime will always update so it will be the last timestamp of the log file
+			endTime = timestamp
+		}
+	}
+	err = scanner.Err()
+	if err != nil {
+		return nil, fmt.Errorf("error reading log file: %w", err)
+	}
+
+	return &models.Job{
+		InstanceID:   a.Instance.InstanceID,
+		Organization: org,
+		Repository:   repo,
+		Workflow:     workflow,
+		StartTime:    startTime,
+		EndTime:      endTime,
+	}, nil
 }

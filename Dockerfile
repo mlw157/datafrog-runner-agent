@@ -7,16 +7,14 @@ RUN go mod download
 
 COPY . ./
 
-RUN apk --no-cache add build-base
-
-RUN go build -o agent .
+RUN go build -o datafrog-runner-agent ./cmd/agent
 
 FROM alpine:3.21.3
 
+ENV MONITOR_INTERVAL="30"
+
 WORKDIR /app
 
-COPY --from=builder /app/agent /app/
+COPY --from=builder /app/datafrog-runner-agent .
 
-RUN apk --no-cache add curl
-
-CMD ["./agent"]
+CMD ["./datafrog-runner-agent"]
