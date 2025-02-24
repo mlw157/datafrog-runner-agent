@@ -37,12 +37,12 @@ func (a *Agent) Deploy() error {
 	a.Instance = &models.Instance{}
 	err := a.getInstance()
 	if err != nil {
-		return fmt.Errorf("agent deploy: error retrieving instance: %w", err)
+		log.Printf("agent deploy: error retrieving instance: %w", err)
 	}
 
 	err = a.ControllerClient.CreateInstance(*a.Instance)
 	if err != nil {
-		return fmt.Errorf("agent deploy: error creating instance: %w", err)
+		log.Printf("agent deploy: error creating instance: %w", err)
 	}
 
 	a.monitor(a.MonitorInterval)
@@ -118,15 +118,16 @@ func (a *Agent) monitor(monitorInterval int) {
 }
 
 func (a *Agent) getNewJobFiles(root string) ([]string, error) {
+	log.Println("finding worker files")
 	var newJobFiles []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		// job logs are located inside _diag folders
-		if d.IsDir() && d.Name() != "_diag" {
-			return filepath.SkipDir
-		}
+		//if d.IsDir() && d.Name() != "_diag" {
+		//	return filepath.SkipDir
+		//}
 
 		if !d.IsDir() && strings.HasPrefix(d.Name(), "Worker_") {
 			if !slices.Contains(a.JobFiles, path) {
@@ -140,6 +141,8 @@ func (a *Agent) getNewJobFiles(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	log.Printf("found files %v\n", newJobFiles)
 
 	return newJobFiles, nil
 }
